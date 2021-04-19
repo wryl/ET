@@ -37,6 +37,9 @@ namespace ET
                 case SceneType.Location:
                     scene.AddComponent<LocationComponent>();
                     break;
+                case SceneType.Router:
+                    scene.AddComponent<NetAgentComponent, IPEndPoint>(startSceneConfig.OuterIPPort);
+                    break;
             }
 
             return scene;

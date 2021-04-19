@@ -118,11 +118,36 @@ namespace ET
 			this.InitKcp();
 		}
 
-		
+		// connectforRouter
+		public KChannel(long id, uint localConn, Socket socket, string realAddress, IPEndPoint remoteEndPoint, KService kService)
+		{
+			this.LocalConn = localConn;
+			if (kChannels.ContainsKey(this.LocalConn))
+			{
+				throw new Exception($"channel create error: {this.LocalConn} {remoteEndPoint} {this.ChannelType}");
+			}
 
-#region 网络线程
+			this.Id = id;
+			this.ChannelType = ChannelType.Connect;
 
-		
+			Log.Info($"channel create: {this.Id} {this.LocalConn} {remoteEndPoint} {this.ChannelType}");
+
+			this.Service = kService;
+			this.RemoteAddress = remoteEndPoint;
+			this.RealAddress = realAddress;
+			this.socket = socket;
+			this.kcp = Kcp.KcpCreate(this.RemoteConn, (IntPtr)this.LocalConn);
+
+			kChannels.Add(this.LocalConn, this);
+
+			this.lastRecvTime = kService.TimeNow;
+			this.CreateTime = kService.TimeNow;
+			this.ConnectToRouter();
+		}
+
+		#region 网络线程
+
+
 
 
 		public override void Dispose()
@@ -218,7 +243,32 @@ namespace ET
 				this.OnError(ErrorCode.ERR_SocketCantSend);
 			}
 		}
-
+		/// <summary>
+		/// 发送请求连接消息
+		/// </summary>
+		private void ConnectToRouter()
+		{
+			try
+			{
+				uint timeNow = this.Service.TimeNow;
+				this.lastRecvTime = timeNow;
+				byte[] buffer = sendCache;
+				buffer.WriteTo(0, KcpProtocalType.SYN);
+				buffer.WriteTo(1, this.LocalConn);
+				buffer.WriteTo(5, this.RemoteConn);
+				var realaddressbyte = this.RealAddress.ToByteArray();
+				realaddressbyte.CopyTo(buffer, 9);
+				this.socket.SendTo(buffer, 0, 9 + realaddressbyte.Length, SocketFlags.None, this.RemoteAddress);
+				Log.Info($"kchannel connect {this.Id} {this.LocalConn} {this.RemoteConn} {this.RealAddress} {this.socket.LocalEndPoint}");
+				// 200毫秒后再次update发送connect请求
+				this.Service.AddToUpdateNextTime(timeNow + 300, this.Id);
+			}
+			catch (Exception e)
+			{
+				Log.Error(e);
+				this.OnError(ErrorCode.ERR_SocketCantSend);
+			}
+		}
 		public void Update()
 		{
 			if (this.IsDisposed)

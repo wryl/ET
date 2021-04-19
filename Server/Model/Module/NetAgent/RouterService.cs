@@ -8,92 +8,41 @@ using System.Runtime.InteropServices;
 
 namespace ET
 {
-    public static class KcpProtocalType
-    {
-        public const byte SYN = 1;
-        public const byte ACK = 2;
-        public const byte FIN = 3;
-        public const byte MSG = 4;
-        
-        public const byte RouterReconnect = 10;
-        public const byte RouterAck = 11;
-        public const byte RouterSYN = 12;
-    }
 
-    public enum ServiceType
-    {
-        Outer,
-        Inner,
-    }
 
-    public sealed class KService: AService
+    public sealed class RouterService : AService
     {
-        // KService创建的时间
+        // RouterService创建的时间
         public long StartTime;
 
-        // 当前时间 - KService创建的时间, 线程安全
+        // 当前时间 - RouterService创建的时间, 线程安全
         public uint TimeNow
         {
             get
             {
-                return (uint) (TimeHelper.ClientNow() - this.StartTime);
+                return (uint)(TimeHelper.ClientNow() - this.StartTime);
             }
         }
 
         private Socket socket;
 
 
-#region 回调方法
-        static KService()
+        #region 回调方法
+        static RouterService()
         {
             //Kcp.KcpSetLog(KcpLog);
-            Kcp.KcpSetoutput(KcpOutput);
+            //Kcp.KcpSetoutput(KcpOutput);
         }
-		
+
         private static readonly byte[] logBuffer = new byte[1024];
-        
-		
-#if ENABLE_IL2CPP
-		[AOT.MonoPInvokeCallback(typeof(KcpOutput))]
-#endif
-        private static void KcpLog(IntPtr bytes, int len, IntPtr kcp, IntPtr user)
-        {
-            try
-            {
-                Marshal.Copy(bytes, logBuffer, 0, len);
-                Log.Info(logBuffer.ToStr(0, len));
-            }
-            catch (Exception e)
-            {
-                Log.Error(e);
-            }
-        }
 
 
-#if ENABLE_IL2CPP
-		[AOT.MonoPInvokeCallback(typeof(KcpOutput))]
-#endif
-        private static int KcpOutput(IntPtr bytes, int len, IntPtr kcp, IntPtr user)
-        {
-            try
-            {
-                KChannel kChannel = KChannel.kChannels[(uint) user];
-                kChannel.Output(bytes, len);
-            }
-            catch (Exception e)
-            {
-                Log.Error(e);
-                return len;
-            }
-            return len;
-        }
-#endregion
+        #endregion
 
-        
-        
-#region 主线程
-        
-        public KService(ThreadSynchronizationContext threadSynchronizationContext, IPEndPoint ipEndPoint, ServiceType serviceType)
+
+        #region 主线程
+
+        public RouterService(ThreadSynchronizationContext threadSynchronizationContext, IPEndPoint ipEndPoint, ServiceType serviceType)
         {
             this.ServiceType = serviceType;
             this.ThreadSynchronizationContext = threadSynchronizationContext;
@@ -111,11 +60,11 @@ namespace ET
                 const uint IOC_IN = 0x80000000;
                 const uint IOC_VENDOR = 0x18000000;
                 uint SIO_UDP_CONNRESET = IOC_IN | IOC_VENDOR | 12;
-                this.socket.IOControl((int) SIO_UDP_CONNRESET, new[] { Convert.ToByte(false) }, null);
+                this.socket.IOControl((int)SIO_UDP_CONNRESET, new[] { Convert.ToByte(false) }, null);
             }
         }
 
-        public KService(ThreadSynchronizationContext threadSynchronizationContext, ServiceType serviceType)
+        public RouterService(ThreadSynchronizationContext threadSynchronizationContext, ServiceType serviceType)
         {
             this.ServiceType = serviceType;
             this.ThreadSynchronizationContext = threadSynchronizationContext;
@@ -129,18 +78,18 @@ namespace ET
                 const uint IOC_IN = 0x80000000;
                 const uint IOC_VENDOR = 0x18000000;
                 uint SIO_UDP_CONNRESET = IOC_IN | IOC_VENDOR | 12;
-                this.socket.IOControl((int) SIO_UDP_CONNRESET, new[] { Convert.ToByte(false) }, null);
+                this.socket.IOControl((int)SIO_UDP_CONNRESET, new[] { Convert.ToByte(false) }, null);
             }
         }
 
 
-        public void ChangeAddress(long id, string realAddress, IPEndPoint address)
+        public void ChangeAddress(long id, IPEndPoint address)
         {
 #if NET_THREAD
             this.ThreadSynchronizationContext.Post(() =>
                     {
 #endif
-            KChannel kChannel = this.Get(id);
+            RouterChannel kChannel = this.Get(id);
             if (kChannel == null)
             {
                 return;
@@ -148,8 +97,6 @@ namespace ET
 
             Log.Info($"channel change address: {id} {address}");
             kChannel.RemoteAddress = address;
-
-            OnRouterReconnect(kChannel.LocalConn, kChannel.RemoteConn, realAddress, address);
 #if NET_THREAD
                     }
         );
@@ -159,14 +106,14 @@ namespace ET
         #endregion
 
         #region 网络线程
-        private readonly Dictionary<long, KChannel> idChannels = new Dictionary<long, KChannel>();
-        private readonly Dictionary<long, KChannel> localConnChannels = new Dictionary<long, KChannel>();
-        private readonly Dictionary<long, KChannel> waitConnectChannels = new Dictionary<long, KChannel>();
+        private readonly Dictionary<long, RouterChannel> idChannels = new Dictionary<long, RouterChannel>();
+        private readonly Dictionary<long, RouterChannel> localConnChannels = new Dictionary<long, RouterChannel>();
+        private readonly Dictionary<long, RouterChannel> waitConnectChannels = new Dictionary<long, RouterChannel>();
         private readonly List<long> waitRemoveChannels = new List<long>();
 
         private readonly byte[] cache = new byte[8192];
         private EndPoint ipEndPoint = new IPEndPoint(IPAddress.Any, 0);
-        
+
         // 网络线程
         private readonly Random random = new Random(Guid.NewGuid().GetHashCode());
 
@@ -197,10 +144,10 @@ namespace ET
             this.socket.Close();
             this.socket = null;
         }
-        
+
         private IPEndPoint CloneAddress()
         {
-            IPEndPoint ip = (IPEndPoint) this.ipEndPoint;
+            IPEndPoint ip = (IPEndPoint)this.ipEndPoint;
             return new IPEndPoint(ip.Address, ip.Port);
         }
 
@@ -223,116 +170,89 @@ namespace ET
 
                 // accept
                 byte flag = this.cache[0];
-                    
+
                 // conn从100开始，如果为1，2，3则是特殊包
                 uint remoteConn = 0;
                 uint localConn = 0;
-                
+                ulong localRmoteConn = 0;
                 try
                 {
-                    KChannel kChannel = null;
+                    RouterChannel kChannel = null;
                     switch (flag)
                     {
 #if NOT_CLIENT
                         case KcpProtocalType.SYN: // accept
-                        {
+                            {
+                                // 长度!=5，不是SYN消息
+                                if (messageLength < 9)
+                                {
+                                    break;
+                                }
+
+                                string realAddress = null;
+                                remoteConn = BitConverter.ToUInt32(this.cache, 1);
+                                if (messageLength > 9)
+                                {
+                                    realAddress = this.cache.ToStr(9, messageLength - 9);
+                                }
+
+                                remoteConn = BitConverter.ToUInt32(this.cache, 1);
+                                //localConn = BitConverter.ToUInt32(this.cache, 5);
+
+                                this.waitConnectChannels.TryGetValue(remoteConn, out kChannel);
+                                if (kChannel == null)
+                                {
+                                    long id = this.CreateAcceptChannelId(remoteConn);
+                                    if (this.idChannels.ContainsKey(id))
+                                    {
+                                        break;
+                                    }
+                                    kChannel = new RouterChannel(id, remoteConn, this.socket, realAddress, this.CloneAddress(), this);
+                                    kChannel.RouterConnect();
+                                    this.idChannels.Add(kChannel.Id, kChannel);
+                                    this.waitConnectChannels.Add(remoteConn, kChannel); // 连接上了或者超时后会删除
+                                    this.localConnChannels.Add(kChannel.LocalConn, kChannel);
+
+                                }
+
+                                break;
+                            }
+                        case KcpProtocalType.RouterReconnect:
                             // 长度!=5，不是SYN消息
                             if (messageLength < 9)
                             {
                                 break;
                             }
 
-                            string realAddress = null;
+                            string RerealAddress = null;
                             remoteConn = BitConverter.ToUInt32(this.cache, 1);
                             if (messageLength > 9)
                             {
-                                realAddress = this.cache.ToStr(9, messageLength - 9);
+                                RerealAddress = this.cache.ToStr(9, messageLength - 9);
                             }
 
                             remoteConn = BitConverter.ToUInt32(this.cache, 1);
-                            localConn = BitConverter.ToUInt32(this.cache, 5);
-
+                            //localConn = BitConverter.ToUInt32(this.cache, 5);
                             this.waitConnectChannels.TryGetValue(remoteConn, out kChannel);
                             if (kChannel == null)
                             {
-                                localConn = CreateRandomLocalConn(this.random);
-                                // 已存在同样的localConn，则不处理，等待下次sync
-                                if (this.localConnChannels.ContainsKey(localConn))
+                                //localConn = CreateRandomLocalConn(this.random);
+                                //已存在同样的localConn，则不处理，等待下次sync
+                                if (this.localConnChannels.ContainsKey(remoteConn))
                                 {
                                     break;
                                 }
-                                long id = this.CreateAcceptChannelId(localConn);
+                                long id = this.CreateAcceptChannelId(remoteConn);
                                 if (this.idChannels.ContainsKey(id))
                                 {
                                     break;
                                 }
-
-                                kChannel = new KChannel(id, localConn, remoteConn, this.socket, this.CloneAddress(), this);
+                                kChannel = new RouterChannel(id, remoteConn, this.socket, RerealAddress, this.CloneAddress(), this);
+                                this.socket.SendTo(this.cache, 0, messageLength, SocketFlags.None, NetworkHelper.ToIPEndPoint(kChannel.RealAddress));
                                 this.idChannels.Add(kChannel.Id, kChannel);
-                                this.waitConnectChannels.Add(kChannel.RemoteConn, kChannel); // 连接上了或者超时后会删除
+                                this.waitConnectChannels.Add(remoteConn, kChannel); // 连接上了或者超时后会删除
                                 this.localConnChannels.Add(kChannel.LocalConn, kChannel);
 
-                                kChannel.RealAddress = realAddress;
-
-                                IPEndPoint realEndPoint = kChannel.RealAddress == null? kChannel.RemoteAddress : NetworkHelper.ToIPEndPoint(kChannel.RealAddress);
-                                this.OnAccept(kChannel.Id, realEndPoint);
-                            }
-
-                            if (kChannel.RemoteConn != remoteConn)
-                            {
-                                break;
-                            }
-
-                            // 地址跟上次的不一致则跳过
-                            if (kChannel.RealAddress != realAddress)
-                            {
-                                Log.Error($"kchannel syn address diff: {kChannel.Id} {kChannel.RealAddress} {realAddress}");
-                                break;
-                            }
-
-                            try
-                            {
-                                byte[] buffer = this.cache;
-                                buffer.WriteTo(0, KcpProtocalType.ACK);
-                                buffer.WriteTo(1, kChannel.LocalConn);
-                                buffer.WriteTo(5, kChannel.RemoteConn);
-                                Log.Info($"kservice syn: {kChannel.Id} {remoteConn} {localConn}");
-                                this.socket.SendTo(buffer, 0, 9, SocketFlags.None, kChannel.RemoteAddress);
-                            }
-                            catch (Exception e)
-                            {
-                                Log.Error(e);
-                                kChannel.OnError(ErrorCode.ERR_SocketCantSend);
-                            }
-
-                            break;
-                        }
-                        case KcpProtocalType.RouterReconnect: // 路由重连
-                            // 长度<=9，不是reconnect消息
-                            //if (messageLength <= 9)
-                            //{
-                            //    break;
-                            //}
-                            remoteConn = BitConverter.ToUInt32(this.cache, 1);
-                            localConn = BitConverter.ToUInt32(this.cache, 5);
-                            Log.Info($"kservice RouterReconnect:  {remoteConn} {localConn}");
-
-                            var newAddress = this.cache.ToStr(9, messageLength - 9);
-                            kChannel = this.GetByLocalConn(localConn);
-
-                            if (kChannel != null)
-                            {
-                                Log.Info($"kservice RouterReconnect: {kChannel.Id} {remoteConn} {localConn}");
-                                if (kChannel.RemoteConn == remoteConn)
-                                {
-                                    kChannel.RemoteAddress = (IPEndPoint)this.ipEndPoint;
-                                    byte[] buffer = this.cache;
-                                    buffer.WriteTo(0, KcpProtocalType.ACK);
-                                    buffer.WriteTo(1, kChannel.LocalConn);
-                                    buffer.WriteTo(5, kChannel.RemoteConn);
-                                    Log.Info($"kservice RouterReconnect: {kChannel.Id} {remoteConn} {localConn}");
-                                    this.socket.SendTo(buffer, 0, 9, SocketFlags.None, kChannel.RemoteAddress);
-                                }
                             }
                             break;
 #endif
@@ -342,15 +262,17 @@ namespace ET
                             {
                                 break;
                             }
-
                             remoteConn = BitConverter.ToUInt32(this.cache, 1);
                             localConn = BitConverter.ToUInt32(this.cache, 5);
                             kChannel = this.GetByLocalConn(localConn);
+
+                            //代表gate连接成功
                             if (kChannel != null)
                             {
-                                Log.Info($"kservice ack: {kChannel.Id} {remoteConn} {localConn}");
                                 kChannel.RemoteConn = remoteConn;
                                 kChannel.HandleConnnect();
+                                //返回给客户端
+                                this.socket.SendTo(this.cache, 0, 9, SocketFlags.None, kChannel.RemoteAddress);
                             }
 
                             break;
@@ -364,139 +286,118 @@ namespace ET
                             remoteConn = BitConverter.ToUInt32(this.cache, 1);
                             localConn = BitConverter.ToUInt32(this.cache, 5);
                             int error = BitConverter.ToInt32(this.cache, 9);
-
-                            // 处理chanel
-                            kChannel = this.GetByLocalConn(localConn);
-                            if (kChannel == null)
+                            localRmoteConn = ((ulong)remoteConn << 32) | localConn;
+                            //直接取出的说明是发往客户端的
+                            if (RouterChannel.LocalRemoteConnId.TryGetValue(localRmoteConn, out kChannel))
                             {
+                                this.socket.SendTo(this.cache, 0, messageLength, SocketFlags.None, kChannel.RemoteAddress);
+                                kChannel.Dispose();
+                                break;
+                            }
+                            localRmoteConn = ((ulong)localConn << 32) | remoteConn;
+                            //如果这样取到说明实际应该发往真正地址
+                            if (RouterChannel.LocalRemoteConnId.TryGetValue(localRmoteConn, out kChannel))
+                            {
+                                this.socket.SendTo(this.cache, 0, messageLength, SocketFlags.None, NetworkHelper.ToIPEndPoint(kChannel.RealAddress));
+                                kChannel.Dispose();
                                 break;
                             }
                             
-                            // 校验remoteConn，防止第三方攻击
-                            if (kChannel.RemoteConn != remoteConn)
-                            {
-                                break;
-                            }
-                            
-                            Log.Info($"kservice recv fin: {kChannel.Id} {localConn} {remoteConn} {error}");
-                            kChannel.OnError(ErrorCode.ERR_PeerDisconnect);
-
                             break;
-                        case KcpProtocalType.MSG: // 断开
+                        case KcpProtocalType.MSG: // 消息要寻找.首先找到localRmoteConn 找到了说明是服务端发往客户端的,否则反过来尝试寻找
                             // 长度<9，不是Msg消息
                             if (messageLength < 9)
                             {
                                 break;
                             }
-                            
                             // 处理chanel
                             remoteConn = BitConverter.ToUInt32(this.cache, 1);
                             localConn = BitConverter.ToUInt32(this.cache, 5);
+                            
+                            localRmoteConn = ((ulong)remoteConn << 32) | localConn;
+                            //直接取出的说明是发往客户端的
+                            if (RouterChannel.LocalRemoteConnId.TryGetValue(localRmoteConn, out kChannel))
+                            {
+                                this.socket.SendTo(this.cache, 0, messageLength, SocketFlags.None, kChannel.RemoteAddress);
+                                break;
+                            }
+                            localRmoteConn=((ulong)localConn << 32) | remoteConn;
+                            //如果这样取到说明实际应该发往真正地址
+                            if (RouterChannel.LocalRemoteConnId.TryGetValue(localRmoteConn, out kChannel))
+                            {
+                                this.socket.SendTo(this.cache, 0, messageLength, SocketFlags.None, NetworkHelper.ToIPEndPoint(kChannel.RealAddress));
+                                break;
+                            }
+                            else
+                            {
+                                Log.Debug("KcpProtocalType.MSG double miss");
+                            }
+                            //kChannel = this.GetByLocalConn(localConn);
+                            //if (kChannel != null)
+                            //{
+                            //    // 校验remoteConn，防止第三方攻击
+                            //    if (kChannel.RemoteConn != remoteConn)
+                            //    {
+                            //        break;
+                            //    }
+                            //    this.socket.SendTo(this.cache, 0, messageLength, SocketFlags.None, kChannel.RemoteAddress);
+                            //    break;
+                            //    // 通知对方断开
+                            //    //this.Disconnect(localConn, remoteConn, ErrorCode.ERR_KcpNotFoundChannel, (IPEndPoint)this.ipEndPoint, 1);
+                            //}
+                            ////可能是客户端发给服务器
 
-                            kChannel = this.GetByLocalConn(localConn);
-                            if (kChannel == null)
-                            {
-                                // 通知对方断开
-                                this.Disconnect(localConn, remoteConn, ErrorCode.ERR_KcpNotFoundChannel, (IPEndPoint) this.ipEndPoint, 1);
-                                break;
-                            }
-                            
-                            // 校验remoteConn，防止第三方攻击
-                            if (kChannel.RemoteConn != remoteConn)
-                            {
-                                break;
-                            }
-                            
-                            kChannel.HandleRecv(this.cache, 5, messageLength - 5);
+                            //kChannel = this.GetByLocalConn(remoteConn);
+                            //if (kChannel==null)
+                            //{
+                            //    //两个conn检测都失败
+                            //    Log.Debug("KcpProtocalType.MSG double miss");
+                            //    break;
+                            //}
+                            //// 校验remoteConn，防止第三方攻击
+                            //if (kChannel.RemoteConn!=localConn)
+                            //{
+                            //    break;
+                            //}
+                            //this.socket.SendTo(this.cache, 0, messageLength, SocketFlags.None, NetworkHelper.ToIPEndPoint(kChannel.RealAddress));
                             break;
                     }
                 }
                 catch (Exception e)
                 {
-                    Log.Error($"kservice error: {flag} {remoteConn} {localConn}\n{e}");
+                    Log.Error($"RouterService error: {flag} {remoteConn} {localConn}\n{e}");
                 }
             }
         }
-        private void OnRouterReconnect(uint localConn, uint remoteConn, string realAddress, IPEndPoint address)
+
+        public RouterChannel Get(long id)
         {
-            if (this.socket == null)
-            {
-                return;
-            }
-            byte[] buffer = this.cache;
-            buffer.WriteTo(0, KcpProtocalType.RouterReconnect);
-            buffer.WriteTo(1, localConn);
-            buffer.WriteTo(5, remoteConn);
-            var realaddressbyte = realAddress.ToByteArray();
-            realaddressbyte.CopyTo(buffer, 9);
-            this.socket.SendTo(buffer, 0, 9 + realaddressbyte.Length, SocketFlags.None, address);
-        }
-        private KChannel Get(long id)
-        {
-            KChannel channel;
+            RouterChannel channel;
             this.idChannels.TryGetValue(id, out channel);
             return channel;
         }
-        
-        private KChannel GetByLocalConn(uint localConn)
+
+        public RouterChannel GetByLocalConn(uint localConn)
         {
-            KChannel channel;
+            RouterChannel channel;
             this.localConnChannels.TryGetValue(localConn, out channel);
             return channel;
         }
 
-        protected override void Get(long id, IPEndPoint address)
-        {
-            if (this.idChannels.TryGetValue(id, out KChannel channel))
-            {
-                return;
-            }
-            try
-            {
-                // 低32bit是localConn
-                uint localConn = (uint)((ulong) id & uint.MaxValue);
-                channel = new KChannel(id, localConn, this.socket, address, this);
-                this.idChannels.Add(id, channel);
-                this.localConnChannels.Add(channel.LocalConn, channel);
-            }
-            catch (Exception e)
-            {
-                Log.Error($"kservice get error: {id}\n{e}");
-            }
-        }
-        public void Get(long id, string realAddress, IPEndPoint address)
-        {
-            if (this.idChannels.TryGetValue(id, out KChannel channel))
-            {
-                return;
-            }
-            try
-            {
-                // 低32bit是localConn
-                uint localConn = (uint)((ulong)id & uint.MaxValue);
-                channel = new KChannel(id, localConn, this.socket, realAddress, address, this);
-                this.idChannels.Add(id, channel);
-                this.localConnChannels.Add(channel.LocalConn, channel);
-            }
-            catch (Exception e)
-            {
-                Log.Error($"kservice get error: {id}\n{e}");
-            }
-        }
         public override void Remove(long id)
         {
-            if (!this.idChannels.TryGetValue(id, out KChannel kChannel))
+            if (!this.idChannels.TryGetValue(id, out RouterChannel kChannel))
             {
                 return;
             }
-            Log.Info($"kservice remove channel: {id} {kChannel.LocalConn} {kChannel.RemoteConn}");
+            Log.Info($"RouterService remove channel: {id} {kChannel.LocalConn} {kChannel.RemoteConn}");
             this.idChannels.Remove(id);
             this.localConnChannels.Remove(kChannel.LocalConn);
-            if (this.waitConnectChannels.TryGetValue(kChannel.RemoteConn, out KChannel waitChannel))
+            if (this.waitConnectChannels.TryGetValue(kChannel.RemoteConn, out RouterChannel waitChannel))
             {
                 if (waitChannel.LocalConn == kChannel.LocalConn)
                 {
-                    this.waitConnectChannels.Remove(kChannel.RemoteConn);        
+                    this.waitConnectChannels.Remove(kChannel.RemoteConn);
                 }
             }
             kChannel.Dispose();
@@ -515,7 +416,7 @@ namespace ET
                 buffer.WriteTo(0, KcpProtocalType.FIN);
                 buffer.WriteTo(1, localConn);
                 buffer.WriteTo(5, remoteConn);
-                buffer.WriteTo(9, (uint) error);
+                buffer.WriteTo(9, (uint)error);
                 for (int i = 0; i < times; ++i)
                 {
                     this.socket.SendTo(buffer, 0, 13, SocketFlags.None, address);
@@ -525,18 +426,18 @@ namespace ET
             {
                 Log.Error($"Disconnect error {localConn} {remoteConn} {error} {address} {e}");
             }
-            
+
             Log.Info($"channel send fin: {localConn} {remoteConn} {address} {error}");
         }
-        
+
         protected override void Send(long channelId, long actorId, MemoryStream stream)
         {
-            KChannel channel = this.Get(channelId);
-            if (channel == null)
-            {
-                return;
-            }
-            channel.Send(actorId, stream);
+            //RouterChannel channel = this.Get(channelId);
+            //if (channel == null)
+            //{
+            //    return;
+            //}
+            //channel.Send(actorId, stream);
         }
 
         // 服务端需要看channel的update时间是否已到
@@ -557,12 +458,12 @@ namespace ET
         public override void Update()
         {
             this.Recv();
-            
+
             this.TimerOut();
 
             foreach (long id in updateChannels)
             {
-                KChannel kChannel = this.Get(id);
+                RouterChannel kChannel = this.Get(id);
                 if (kChannel == null)
                 {
                     continue;
@@ -577,23 +478,23 @@ namespace ET
             }
 
             this.updateChannels.Clear();
-            
+
             this.RemoveConnectTimeoutChannels();
         }
 
         private void RemoveConnectTimeoutChannels()
         {
             this.waitRemoveChannels.Clear();
-            
+
             foreach (long channelId in this.waitConnectChannels.Keys)
             {
-                this.waitConnectChannels.TryGetValue(channelId, out KChannel kChannel);
+                this.waitConnectChannels.TryGetValue(channelId, out RouterChannel kChannel);
                 if (kChannel == null)
                 {
                     Log.Error($"RemoveConnectTimeoutChannels not found kchannel: {channelId}");
                     continue;
                 }
-                
+
                 // 连接上了要马上删除
                 if (kChannel.IsConnected)
                 {
@@ -652,6 +553,11 @@ namespace ET
                 this.timeId.Remove(k);
             }
         }
-#endregion
+
+        protected override void Get(long id, IPEndPoint address)
+        {
+            throw new NotImplementedException();
+        }
+        #endregion
     }
 }

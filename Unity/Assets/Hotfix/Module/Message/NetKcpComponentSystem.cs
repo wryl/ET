@@ -11,7 +11,7 @@ namespace ET
         {
             self.MessageDispatcher = new OuterMessageDispatcher();
             
-            self.Service = new TService(NetThreadComponent.Instance.ThreadSynchronizationContext, ServiceType.Outer);
+            self.Service = new KService(NetThreadComponent.Instance.ThreadSynchronizationContext, ServiceType.Outer);
             self.Service.ErrorCallback += self.OnError;
             self.Service.ReadCallback += self.OnRead;
 
@@ -26,7 +26,7 @@ namespace ET
         {
             self.MessageDispatcher = new OuterMessageDispatcher();
             
-            self.Service = new TService(NetThreadComponent.Instance.ThreadSynchronizationContext, address, ServiceType.Outer);
+            self.Service = new KService(NetThreadComponent.Instance.ThreadSynchronizationContext, address, ServiceType.Outer);
             self.Service.ErrorCallback += self.OnError;
             self.Service.ReadCallback += self.OnRead;
             self.Service.AcceptCallback += self.OnAccept;
@@ -105,6 +105,24 @@ namespace ET
             session.AddComponent<SessionIdleCheckerComponent, int>(NetThreadComponent.checkInteral);
             
             self.Service.GetOrCreate(session.Id, realIPEndPoint);
+
+            return session;
+        }
+        /// <summary>
+        /// 添加路由服务器的地址
+        /// </summary>
+        /// <param name="self"></param>
+        /// <param name="realAddress">真正gate地址</param>
+        /// <param name="realIPEndPoint">路由服务器地址</param>
+        /// <returns></returns>
+        public static Session Create(this NetKcpComponent self, string realAddress, IPEndPoint realIPEndPoint)
+        {
+            long channelId = RandomHelper.RandInt64();
+            Session session = EntityFactory.CreateWithParentAndId<Session, AService>(self, channelId, self.Service);
+            session.RemoteAddress = realIPEndPoint;
+            var comp=session.AddComponent<SessionIdleCheckerComponent, int>(NetThreadComponent.checkInteral);
+            comp.RealAddress = realAddress;
+            ((KService)self.Service).Get(session.Id, realAddress, realIPEndPoint);
 
             return session;
         }

@@ -17,7 +17,7 @@ namespace ET
                 }
 
                 // 创建一个gate Session,并且保存到SessionComponent中
-                Session gateSession = zoneScene.GetComponent<NetKcpComponent>().Create(NetworkHelper.ToIPEndPoint(r2CLogin.Address));
+                Session gateSession = zoneScene.GetComponent<NetKcpComponent>().Create(r2CLogin.Address,NetworkHelper.ToIPEndPoint("127.0.0.1:10007"));
                 gateSession.AddComponent<PingComponent>();
                 zoneScene.AddComponent<SessionComponent>().Session = gateSession;
 				
